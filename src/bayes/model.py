@@ -9,7 +9,10 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 
 
 def _group_sizes(columns: Iterable[str], sep: str = "|") -> Dict[str, int]:
-    """Cuenta cuántas columnas pertenecen a cada grupo. Si no hay `sep`, cada columna es su propio grupo."""
+    """
+    Cuenta cuántas columnas pertenecen a cada grupo.
+    Si no hay `sep`, cada columna es su propio grupo.
+    """
     gs: Dict[str, int] = {}
     for c in columns:
         cs = str(c)
@@ -24,7 +27,8 @@ class BayesClassifier(BaseEstimator, ClassifierMixin):
 
     Score por feature:
       Score = log( P(x|C) / P(x|~C) ) con Laplace smoothing (alpha)
-    y la prob final:
+
+    Prob final:
       P(y=1|X) = sigmoid( intercept + sum(Score_i * x_i) )
 
     Parámetros
@@ -34,7 +38,8 @@ class BayesClassifier(BaseEstimator, ClassifierMixin):
     min_cases : int
         Si N(C∩X) < min_cases => Score=0 (robustez).
     sep : str
-        Separador opcional para columnas tipo `grupo|categoria` (sirve para ajustar smoothing por grupo).
+        Separador opcional para columnas tipo `grupo|categoria`.
+        Si en X no existe `sep`, la tabla NO incluirá la columna `group`.
     threshold : float
         Umbral para predict().
     use_prior : bool
@@ -67,7 +72,12 @@ class BayesClassifier(BaseEstimator, ClassifierMixin):
         # scikit-learn convention
         self.classes_ = np.array([0, 1], dtype=int)
 
+        # Asegurar 0/1
         Xv = (X_df.fillna(0) > 0).astype(int)
+
+        # Detectar si hay grupos reales (si existe al menos un '|')
+        has_sep = any((self.sep in str(c)) for c in Xv.columns)
+        self.has_groups_ = bool(has_sep)
 
         mask = (y_arr == 1)
         Nc = int(mask.sum())
@@ -93,17 +103,25 @@ class BayesClassifier(BaseEstimator, ClassifierMixin):
         # Edge: single class only
         if Nc == 0 or Nnc == 0:
             for col in Xv.columns:
-                weights[str(col)] = 0.0
-                rows.append({
-                    "feature": str(col),
-                    "group": str(col).split(self.sep, 1)[0] if self.sep in str(col) else str(col),
+                col_s = str(col)
+                group = col_s.split(self.sep, 1)[0] if self.sep in col_s else col_s
+
+                weights[col_s] = 0.0
+
+                row = {
+                    "feature": col_s,
                     "N(CX)": 0,
                     "N(X)": int(Xv[col].sum()),
                     "P(C|X)": float(prior),
                     "P(C)": float(prior),
                     "Epsilon": 0.0,
                     "Score": 0.0,
-                })
+                }
+                if has_sep:
+                    row["group"] = group
+
+                rows.append(row)
+
             self.feature_table_ = pd.DataFrame(rows)
             self.weights_ = pd.Series(weights, dtype=float)
             self.feature_names_in_ = np.array(list(Xv.columns), dtype=object)
@@ -131,19 +149,26 @@ class BayesClassifier(BaseEstimator, ClassifierMixin):
             denom = np.sqrt(Nx * prior * (1.0 - prior))
             epsilon = float((Nx * (p_c_given_x - prior) / denom) if denom > 0 else 0.0)
 
-            rows.append({
+            row = {
                 "feature": col_s,
-                "group": group,
                 "N(CX)": nCx,
                 "N(X)": Nx,
                 "P(C|X)": p_c_given_x,
                 "P(C)": prior,
                 "Epsilon": epsilon,
                 "Score": score,
-            })
+            }
+            if has_sep:
+                row["group"] = group
+
+            rows.append(row)
             weights[col_s] = score
 
-        self.feature_table_ = pd.DataFrame(rows).sort_values("Score", ascending=False).reset_index(drop=True)
+        df_tab = pd.DataFrame(rows)
+
+        # Ordenar por Score
+        self.feature_table_ = df_tab.sort_values("Score", ascending=False).reset_index(drop=True)
+
         self.weights_ = pd.Series(weights, dtype=float)
         self.feature_names_in_ = np.array(list(Xv.columns), dtype=object)
         return self
@@ -171,5 +196,5 @@ class BayesClassifier(BaseEstimator, ClassifierMixin):
         return pd.DataFrame(X, columns=[f"f{i}" for i in range(X.shape[1])])
 
 
-# Compat: nombre anterior (no recomendado)
+# Alias por compatibilidad (opcional)
 BayesDummyClassifier = BayesClassifier
